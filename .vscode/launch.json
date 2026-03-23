@@ -1,0 +1,40 @@
+{
+    "configurations": [
+        {
+            "name": "Debug executable 'super-tux-showdown'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=super-tux-showdown",
+                    "--package=super-tux-showdown",
+                    "--features=dev",
+                    "--target-dir=/home/rdrpenguin/global-target"
+                ]
+            },
+            "args": [],
+            "env": {
+                "CARGO_MANIFEST_DIR": "${workspaceFolder}",
+            }
+        },
+        {
+            "name": "Debug executable 'super-tux-showdown-frame-tool'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=super-tux-showdown-frame-tool",
+                    "--package=super-tux-showdown-frame-tool",
+                    "--features=dev",
+                    "--target-dir=/home/rdrpenguin/global-target"
+                ]
+            },
+            "args": [],
+            "env": {
+                "CARGO_MANIFEST_DIR": "${workspaceFolder}",
+            }
+        }
+    ],
+}

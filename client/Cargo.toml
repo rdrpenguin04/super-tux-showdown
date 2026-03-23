@@ -1,0 +1,37 @@
+[package]
+name = "super-tux-showdown"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+super-tux-showdown-common.workspace = true
+
+avian2d = { git = "https://github.com/avianphysics/avian" }
+bevy = "0.18"
+bevy_egui = { version = "0.39.1", optional = true }
+# Set max log levels. This helps avoid unwanted low-severity log spam, which can affect performance.
+log = { version = "0.4", features = [
+    "max_level_debug",
+    "release_max_level_warn",
+] }
+thiserror = "2"
+tracing = { version = "0.1", features = [
+    "max_level_debug",
+    "release_max_level_warn",
+] }
+serde_json = "1"
+
+# Idiomatic Bevy code often triggers these lints, and the CI workflow treats them as errors.
+# In some cases they may still signal poor code quality however, so consider commenting out these lines.
+[lints.clippy]
+# Bevy supplies arguments to systems via dependency injection, so it's natural for systems to
+# request more than 7 arguments -- which triggers this lint.
+too_many_arguments = "allow"
+# Queries that access many components may trigger this lint.
+type_complexity = "allow"
+
+[features]
+dev = ["bevy/bevy_remote", "bevy/bevy_dev_tools", "bevy_egui"]
+
+[package.metadata.bevy_cli.native.dev]
+features = ["dev"]
