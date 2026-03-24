@@ -3,13 +3,23 @@ pub mod data;
 pub mod debug;
 pub mod input;
 
+use std::f32::consts::PI;
+
 use avian2d::prelude::*;
-use bevy::{asset::AssetMetaCheck, prelude::*};
+use bevy::{
+    asset::AssetMetaCheck,
+    camera::{
+        ScalingMode,
+        visibility::{Layer, RenderLayers},
+    },
+    prelude::*,
+};
 #[cfg(feature = "dev")]
 use bevy::{
     dev_tools::fps_overlay::FpsOverlayPlugin,
     remote::{RemotePlugin, http::RemoteHttpPlugin},
 };
+use bevy_hanabi::prelude::*;
 use super_tux_showdown_common::{TerrainBox, anim::names::IDLE};
 
 use crate::{
@@ -28,6 +38,9 @@ enum MainState {
     Loading,
     Game,
 }
+
+const MAIN_RENDER_LAYER: Layer = 0;
+const UI_RENDER_LAYER: Layer = 1;
 
 fn main() -> AppExit {
     App::new()
@@ -55,25 +68,36 @@ fn main() -> AppExit {
             ),
         ))
         .add_plugins((
-            PhysicsPlugins::default(), // .set(PhysicsInterpolationPlugin::interpolate_all()),
+            PhysicsPlugins::default().set(PhysicsInterpolationPlugin::interpolate_all()),
             PhysicsPickingPlugin,
             PhysicsDebugPlugin,
         ))
+        .add_plugins(HanabiPlugin)
         .add_plugins((data::plugin, input::plugin))
         .insert_gizmo_config(
             PhysicsGizmos {
                 axis_lengths: Some(vec2(0.2, 0.2)),
                 ..default()
             },
-            GizmoConfig::default(),
+            GizmoConfig {
+                depth_bias: -1.0,
+                ..default()
+            },
         )
         .insert_resource(Gravity::default())
+        .add_message::<Launch>()
         .add_systems(Startup, load_temp_assets)
         .add_systems(OnEnter(MainState::Game), setup_game)
         .add_systems(Update, await_load.run_if(in_state(MainState::Loading)))
+        .add_systems(Update, update_game_ui.run_if(in_state(MainState::Game)))
         .add_systems(
             FixedUpdate,
-            (check_ground, player_movement, run_move_and_slide)
+            (
+                apply_launches,
+                check_ground,
+                player_movement,
+                run_move_and_slide,
+            )
                 .chain()
                 .run_if(in_state(MainState::Game)),
         )
@@ -84,7 +108,25 @@ fn main() -> AppExit {
 #[derive(Component, Reflect, Debug)]
 #[reflect(Component)]
 #[require(Action)]
-struct Player;
+struct Player {
+    damage: f32,
+    weight: f32,
+}
+
+impl Default for Player {
+    fn default() -> Self {
+        Self {
+            damage: 0.0,
+            weight: 100.0,
+        }
+    }
+}
+
+#[derive(Component, Reflect, Debug)]
+#[reflect(Component)]
+struct PlayerDamageLabel {
+    player: u8,
+}
 
 #[derive(Component, Reflect, Debug)]
 #[reflect(Component)]
@@ -110,6 +152,12 @@ pub enum Action {
         frames_left: u8,
         short: bool,
     },
+    Hitstun {
+        frames_left: u8,
+    },
+    Landing {
+        frames_left: u8,
+    },
 }
 
 impl Action {
@@ -128,6 +176,8 @@ impl Action {
                 }
             }
             Self::Jumpsquat { .. } => &[],
+            Self::Hitstun { .. } => &[],
+            Self::Landing { .. } => &[],
         }
     }
 }
@@ -164,29 +214,48 @@ fn setup_game(
 ) {
     let character = characters.get(&game_assets.tux).unwrap();
     commands
-        .spawn((CameraRoot, Transform::from_xyz(0.0, 0.0, 10.0)))
+        .spawn((CameraRoot, Transform::from_xyz(0.0, 0.0, 24.0)))
         .with_children(|commands| {
-            commands.spawn(Camera3d::default());
+            commands.spawn((Camera3d::default(), RenderLayers::layer(MAIN_RENDER_LAYER)));
             commands.spawn(DirectionalLight {
                 illuminance: 2000.0,
                 ..default()
             });
-            // commands.spawn((
-            //     Camera2d::default(),
-            //     Projection::Perspective(PerspectiveProjection::default()),
-            //     Camera {
-            //         order: 1,
-            //         clear_color: ClearColorConfig::None,
-            //         ..default()
-            //     },
-            // ));
         });
+
+    commands.spawn((
+        Camera2d,
+        Camera {
+            order: 1,
+            ..default()
+        },
+        Projection::Orthographic(OrthographicProjection {
+            scaling_mode: ScalingMode::FixedVertical {
+                viewport_height: 2.0,
+            },
+            ..OrthographicProjection::default_2d()
+        }),
+        RenderLayers::layer(UI_RENDER_LAYER),
+    ));
+
+    commands
+        .spawn((
+            Transform::from_scale(Vec3::splat(1.0 / 256.0)).with_translation(vec3(0.0, -0.8, 0.0)),
+            TextLayout::new_with_justify(Justify::Center),
+            RenderLayers::layer(UI_RENDER_LAYER),
+            Text2d::new("Tux:\n"),
+        ))
+        .with_children(|parent| {
+            parent.spawn((TextSpan::new("0.0"), PlayerDamageLabel { player: 0 }));
+            parent.spawn(TextSpan::new("%"));
+        });
+
     commands.spawn((
         Collider::convex_polyline(vec![
-            vec2(-4.0, 0.0),
-            vec2(4.0, 0.0),
-            vec2(3.2, -0.8),
-            vec2(-3.2, -0.8),
+            vec2(-8.0, 0.0),
+            vec2(8.0, 0.0),
+            vec2(6.4, -1.6),
+            vec2(-6.4, -1.6),
         ])
         .unwrap(),
         RigidBody::Static,
@@ -194,7 +263,7 @@ fn setup_game(
     let idle = &character.anims[IDLE].frames[0];
     commands
         .spawn((
-            Player,
+            Player::default(),
             to_collider(idle.bounding_box),
             RigidBody::Kinematic,
             CustomPositionIntegration,
@@ -213,6 +282,23 @@ fn setup_game(
         });
 }
 
+#[derive(Message)]
+pub struct Launch {
+    pub target: Entity,
+    pub damage: f32,
+    pub angle: u16,
+    pub scaling: f32,
+    pub base: f32,
+    pub flipped: bool,
+}
+
+fn update_game_ui(
+    mut damage_label: Single<&mut TextSpan, With<PlayerDamageLabel>>,
+    player: Single<&Player>,
+) {
+    damage_label.0 = format!("{:.1}", player.damage);
+}
+
 fn check_ground(
     mut commands: Commands,
     query: Query<(Entity, &ChildOf), With<GroundDetector>>,
@@ -224,6 +310,40 @@ fn check_ground(
         } else {
             commands.entity(parent.0).remove::<Grounded>();
         }
+    }
+}
+
+pub fn angle_to_vector(mut angle: u16, flip: bool) -> Vec2 {
+    if angle < 360 {
+        if flip {
+            angle = 180 - angle;
+        }
+        let angle = angle as f32 / 180.0 * PI;
+        Vec2::from_angle(angle)
+    } else {
+        todo!("Sakurai + autolinks")
+    }
+}
+
+fn apply_launches(
+    mut players: Query<(&mut Player, &mut Action, &mut LinearVelocity)>,
+    mut launches: MessageReader<Launch>,
+) {
+    for launch in launches.read() {
+        let (mut player, mut action, mut velocity) = players.get_mut(launch.target).unwrap();
+        player.damage += launch.damage;
+        let knockback = ((player.damage / 10.0 + player.damage * launch.damage / 20.0)
+            * (200.0 / (player.weight + 100.0))
+            * 1.4
+            + 18.0)
+            * (launch.scaling / 100.0)
+            + launch.base;
+        let direction = angle_to_vector(launch.angle, launch.flipped);
+        velocity.0 = direction * knockback / 10.0;
+        *action = Action::Hitstun {
+            frames_left: ((knockback * 0.4) as u32).try_into().unwrap_or(255),
+        };
+        println!("{knockback:?} {direction:?} {velocity:?} {action:?}");
     }
 }
 
@@ -267,8 +387,8 @@ fn player_movement(
                 if grounded {
                     *action = Action::Idle;
                 }
-                movement_velocity.x = held.direction * 0.5;
-                damping = 5.0;
+                movement_velocity.x = held.direction * 0.2;
+                damping = 0.1;
             }
             Action::Jumpsquat { frames_left, short } => {
                 if !held.jump {
@@ -276,14 +396,44 @@ fn player_movement(
                 }
                 *frames_left -= 1;
                 if *frames_left == 0 {
-                    lin_vel.y = if *short { 4.8 } else { 8.0 };
+                    lin_vel.y = if *short { 10.0 } else { 13.0 };
                     *action = Action::Airborne {
                         coyote_frames: 0,
                         jumps_left: 1,
                         fast_fall: false,
                     };
                 }
-                damping = 20.0;
+                // damping = 10.0;
+            }
+            Action::Hitstun { frames_left } => {
+                *frames_left -= 1;
+                let frames_left = *frames_left; // Copy the value so we don't reference a non-existent object
+                if frames_left == 0 {
+                    *action = Action::Airborne {
+                        coyote_frames: 0,
+                        jumps_left: 1,
+                        fast_fall: false,
+                    };
+                }
+                if grounded {
+                    *action = Action::Landing {
+                        frames_left: 10.min(frames_left),
+                    };
+                }
+                damping = 0.1;
+            }
+            Action::Landing { frames_left } => {
+                *frames_left -= 1;
+                if *frames_left == 0 {
+                    *action = Action::Idle;
+                }
+                if !grounded {
+                    *action = Action::Airborne {
+                        coyote_frames: 0,
+                        jumps_left: 1,
+                        fast_fall: false,
+                    };
+                }
             }
         }
 
@@ -291,7 +441,7 @@ fn player_movement(
             match (&mut *action, next_action) {
                 (Action::Idle, InputAction::Jump) => {
                     *action = Action::Jumpsquat {
-                        frames_left: 6,
+                        frames_left: 5,
                         short: false,
                     }
                 }
@@ -307,26 +457,32 @@ fn player_movement(
                         *coyote_frames = 0;
                     } else {
                         *jumps_left -= 1;
+                        if held.direction.signum() != lin_vel.x.signum() && lin_vel.x > 0.1 {
+                            lin_vel.x += held.direction * 4.0;
+                        } else {
+                            lin_vel.x += held.direction;
+                        }
                     }
-                    lin_vel.y = 8.0;
+                    lin_vel.y = 13.0;
                     *fast_fall = false;
                 }
                 _ => unreachable!(),
             }
         }
 
-        // movement_velocity += Vec2::Y * 20.0
-
-        movement_velocity = movement_velocity * delta_time * 40.0;
-
         lin_vel.0 += movement_velocity;
 
         lin_vel.0 += gravity.0 * delta_time * gravity_damping * 4.0;
 
-        let current_speed = lin_vel.x.abs();
-        if current_speed > 0.0 {
-            lin_vel.0.x = lin_vel.0.x / current_speed
-                * (current_speed - current_speed * damping * delta_time).max(0.0);
+        let current_speed_x = lin_vel.x.abs();
+        if current_speed_x > 0.0 {
+            lin_vel.x = lin_vel.x / current_speed_x
+                * (current_speed_x - current_speed_x * damping * delta_time).max(0.0);
+        }
+        let current_speed_y = lin_vel.y.abs();
+        if current_speed_y > 0.0 {
+            lin_vel.y = lin_vel.y / current_speed_y
+                * (current_speed_y - current_speed_y * damping * delta_time).max(0.0);
         }
     }
 }
@@ -348,10 +504,7 @@ fn run_move_and_slide(
             time.delta(),
             &MoveAndSlideConfig::default(),
             &SpatialQueryFilter::from_excluded_entities([entity]),
-            |hit| {
-                // println!("{hit:?}");
-                MoveAndSlideHitResponse::Accept
-            },
+            |_| MoveAndSlideHitResponse::Accept,
         );
 
         transform.translation = position.extend(0.0);
