@@ -93,8 +93,8 @@ fn main() -> AppExit {
         .add_systems(
             FixedUpdate,
             (
-                apply_launches,
                 check_ground,
+                apply_launches,
                 player_movement,
                 run_move_and_slide,
             )
@@ -108,9 +108,12 @@ fn main() -> AppExit {
 #[derive(Component, Reflect, Debug)]
 #[reflect(Component)]
 #[require(Action)]
-struct Player {
+pub struct Player {
     damage: f32,
     weight: f32,
+    facing: f32,
+    coyote_frames: u8,
+    jumps_left: u8,
 }
 
 impl Default for Player {
@@ -118,6 +121,9 @@ impl Default for Player {
         Self {
             damage: 0.0,
             weight: 100.0,
+            facing: 1.0,
+            coyote_frames: 0,
+            jumps_left: 2,
         }
     }
 }
@@ -144,8 +150,6 @@ pub enum Action {
     #[default]
     Idle,
     Airborne {
-        coyote_frames: u8,
-        jumps_left: u8,
         fast_fall: bool,
     },
     Jumpsquat {
@@ -158,18 +162,17 @@ pub enum Action {
     Landing {
         frames_left: u8,
     },
+    Turnaround {
+        frames_left: u8,
+    },
 }
 
 impl Action {
-    pub fn allowed(&self) -> &'static [InputAction] {
+    pub fn allowed(&self, player: &Player) -> &'static [InputAction] {
         match self {
             Self::Idle => &[InputAction::Jump],
-            Self::Airborne {
-                coyote_frames,
-                jumps_left,
-                ..
-            } => {
-                if *jumps_left > 0 || *coyote_frames > 0 {
+            Self::Airborne { .. } => {
+                if player.jumps_left > 0 || player.coyote_frames > 0 {
                     &[InputAction::Jump]
                 } else {
                     &[]
@@ -178,6 +181,7 @@ impl Action {
             Self::Jumpsquat { .. } => &[],
             Self::Hitstun { .. } => &[],
             Self::Landing { .. } => &[],
+            Self::Turnaround { .. } => &[InputAction::Jump],
         }
     }
 }
@@ -326,11 +330,12 @@ pub fn angle_to_vector(mut angle: u16, flip: bool) -> Vec2 {
 }
 
 fn apply_launches(
-    mut players: Query<(&mut Player, &mut Action, &mut LinearVelocity)>,
+    mut commands: Commands,
+    mut players: Query<(&mut Player, &mut Action, &mut LinearVelocity, Has<Grounded>)>,
     mut launches: MessageReader<Launch>,
 ) {
     for launch in launches.read() {
-        let (mut player, mut action, mut velocity) = players.get_mut(launch.target).unwrap();
+        let (mut player, mut action, mut velocity, grounded) = players.get_mut(launch.target).unwrap();
         player.damage += launch.damage;
         let knockback = ((player.damage / 10.0 + player.damage * launch.damage / 20.0)
             * (200.0 / (player.weight + 100.0))
@@ -343,40 +348,41 @@ fn apply_launches(
         *action = Action::Hitstun {
             frames_left: ((knockback * 0.4) as u32).try_into().unwrap_or(255),
         };
-        println!("{knockback:?} {direction:?} {velocity:?} {action:?}");
+        if grounded {
+            player.jumps_left = 1;
+        }
+        commands.entity(launch.target).remove::<Grounded>();
     }
 }
 
 fn player_movement(
-    mut query: Query<(&mut LinearVelocity, Has<Grounded>, &mut Action), With<Player>>,
+    mut query: Query<(&mut Player, &mut LinearVelocity, Has<Grounded>, &mut Action), With<Player>>,
     time: Res<Time<Fixed>>,
     held: Res<HeldInputs>,
     mut buffer: ResMut<ActionBuffer>,
     gravity: Res<Gravity>,
 ) {
     let delta_time = time.delta_secs();
-    for (mut lin_vel, grounded, mut action) in &mut query {
+    for (mut player, mut lin_vel, grounded, mut action) in &mut query {
         let mut movement_velocity = Vec2::ZERO;
         let mut damping = 10.0;
         let mut gravity_damping = 0.5;
 
+        player.coyote_frames = player.coyote_frames.saturating_sub(1);
+        if grounded {
+            player.coyote_frames = 0;
+            player.jumps_left = 2;
+        }
         match &mut *action {
             Action::Idle => {
                 if !grounded {
-                    *action = Action::Airborne {
-                        coyote_frames: 4,
-                        jumps_left: 1,
-                        fast_fall: false,
-                    };
+                    *action = Action::Airborne { fast_fall: false };
+                    player.jumps_left = 1;
+                    player.coyote_frames = 4;
                 }
                 movement_velocity.x = held.direction;
             }
-            Action::Airborne {
-                coyote_frames,
-                fast_fall,
-                ..
-            } => {
-                *coyote_frames = coyote_frames.saturating_sub(1);
+            Action::Airborne { fast_fall, .. } => {
                 if held.fast_fall && lin_vel.y <= 0.05 {
                     *fast_fall = true;
                     lin_vel.y -= 1.0;
@@ -385,7 +391,7 @@ fn player_movement(
                     gravity_damping = 1.0;
                 }
                 if grounded {
-                    *action = Action::Idle;
+                    *action = Action::Landing { frames_left: 3 };
                 }
                 movement_velocity.x = held.direction * 0.2;
                 damping = 0.1;
@@ -397,11 +403,7 @@ fn player_movement(
                 *frames_left -= 1;
                 if *frames_left == 0 {
                     lin_vel.y = if *short { 10.0 } else { 13.0 };
-                    *action = Action::Airborne {
-                        coyote_frames: 0,
-                        jumps_left: 1,
-                        fast_fall: false,
-                    };
+                    *action = Action::Airborne { fast_fall: false };
                 }
                 // damping = 10.0;
             }
@@ -409,16 +411,10 @@ fn player_movement(
                 *frames_left -= 1;
                 let frames_left = *frames_left; // Copy the value so we don't reference a non-existent object
                 if frames_left == 0 {
-                    *action = Action::Airborne {
-                        coyote_frames: 0,
-                        jumps_left: 1,
-                        fast_fall: false,
-                    };
+                    *action = Action::Airborne { fast_fall: false };
                 }
                 if grounded {
-                    *action = Action::Landing {
-                        frames_left: 10.min(frames_left),
-                    };
+                    *action = Action::Landing { frames_left: 10 };
                 }
                 damping = 0.1;
             }
@@ -428,16 +424,18 @@ fn player_movement(
                     *action = Action::Idle;
                 }
                 if !grounded {
-                    *action = Action::Airborne {
-                        coyote_frames: 0,
-                        jumps_left: 1,
-                        fast_fall: false,
-                    };
+                    *action = Action::Airborne { fast_fall: false };
+                }
+            }
+            Action::Turnaround { frames_left } => {
+                *frames_left -= 1;
+                if !grounded {
+                    *action = Action::Airborne { fast_fall: false };
                 }
             }
         }
 
-        if let Some(next_action) = buffer.try_consume(action.allowed()) {
+        if let Some(next_action) = buffer.try_consume(action.allowed(&player)) {
             match (&mut *action, next_action) {
                 (Action::Idle, InputAction::Jump) => {
                     *action = Action::Jumpsquat {
@@ -445,22 +443,15 @@ fn player_movement(
                         short: false,
                     }
                 }
-                (
-                    Action::Airborne {
-                        coyote_frames,
-                        jumps_left,
-                        fast_fall,
-                    },
-                    InputAction::Jump,
-                ) => {
-                    if *coyote_frames > 0 {
-                        *coyote_frames = 0;
+                (Action::Airborne { fast_fall }, InputAction::Jump) => {
+                    if player.coyote_frames > 0 {
+                        player.coyote_frames = 0;
                     } else {
-                        *jumps_left -= 1;
+                        player.jumps_left -= 1;
                         if held.direction.signum() != lin_vel.x.signum() && lin_vel.x > 0.1 {
                             lin_vel.x += held.direction * 4.0;
                         } else {
-                            lin_vel.x += held.direction;
+                            lin_vel.x += held.direction * 0.5;
                         }
                     }
                     lin_vel.y = 13.0;
