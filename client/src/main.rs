@@ -97,6 +97,7 @@ fn main() -> AppExit {
                 apply_launches,
                 player_movement,
                 run_move_and_slide,
+                hacky_respawn,
             )
                 .chain()
                 .run_if(in_state(MainState::Game)),
@@ -335,7 +336,8 @@ fn apply_launches(
     mut launches: MessageReader<Launch>,
 ) {
     for launch in launches.read() {
-        let (mut player, mut action, mut velocity, grounded) = players.get_mut(launch.target).unwrap();
+        let (mut player, mut action, mut velocity, grounded) =
+            players.get_mut(launch.target).unwrap();
         player.damage += launch.damage;
         let knockback = ((player.damage / 10.0 + player.damage * launch.damage / 20.0)
             * (200.0 / (player.weight + 100.0))
@@ -500,5 +502,16 @@ fn run_move_and_slide(
 
         transform.translation = position.extend(0.0);
         lin_vel.0 = projected_velocity;
+    }
+}
+
+fn hacky_respawn(mut players: Query<(&mut Transform, &mut LinearVelocity), With<Player>>) {
+    for (mut transform, mut velocity) in &mut players {
+        if transform.translation.y < -20.0 {
+            transform.translation.x = 0.0;
+            transform.translation.y = 5.0;
+            velocity.x = 0.0;
+            velocity.y = -5.0;
+        }
     }
 }
