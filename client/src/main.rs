@@ -24,7 +24,7 @@ use super_tux_showdown_common::{TerrainBox, anim::names::IDLE};
 
 use crate::{
     data::CharacterDescription,
-    input::{ActionBuffer, HeldInputs, InputAction},
+    input::{ActionBuffer, HeldInputs, InputAction, InputConfig},
 };
 
 #[derive(Component, Reflect, Debug)]
@@ -108,12 +108,13 @@ fn main() -> AppExit {
 
 #[derive(Component, Reflect, Debug)]
 #[reflect(Component)]
-#[require(Action)]
+#[require(Action, HeldInputs, ActionBuffer)]
 pub struct Player {
     damage: f32,
     weight: f32,
     facing: f32,
     coyote_frames: u8,
+    // specifically midair jumps
     jumps_left: u8,
 }
 
@@ -124,7 +125,7 @@ impl Default for Player {
             weight: 100.0,
             facing: 1.0,
             coyote_frames: 0,
-            jumps_left: 2,
+            jumps_left: 1,
         }
     }
 }
@@ -269,6 +270,7 @@ fn setup_game(
     commands
         .spawn((
             Player::default(),
+            InputConfig::default(),
             to_collider(idle.bounding_box),
             RigidBody::Kinematic,
             CustomPositionIntegration,
@@ -332,12 +334,11 @@ pub fn angle_to_vector(mut angle: u16, flip: bool) -> Vec2 {
 
 fn apply_launches(
     mut commands: Commands,
-    mut players: Query<(&mut Player, &mut Action, &mut LinearVelocity, Has<Grounded>)>,
+    mut players: Query<(&mut Player, &mut Action, &mut LinearVelocity)>,
     mut launches: MessageReader<Launch>,
 ) {
     for launch in launches.read() {
-        let (mut player, mut action, mut velocity, grounded) =
-            players.get_mut(launch.target).unwrap();
+        let (mut player, mut action, mut velocity) = players.get_mut(launch.target).unwrap();
         player.damage += launch.damage;
         let knockback = ((player.damage / 10.0 + player.damage * launch.damage / 20.0)
             * (200.0 / (player.weight + 100.0))
@@ -350,22 +351,27 @@ fn apply_launches(
         *action = Action::Hitstun {
             frames_left: ((knockback * 0.4) as u32).try_into().unwrap_or(255),
         };
-        if grounded {
-            player.jumps_left = 1;
-        }
         commands.entity(launch.target).remove::<Grounded>();
     }
 }
 
 fn player_movement(
-    mut query: Query<(&mut Player, &mut LinearVelocity, Has<Grounded>, &mut Action), With<Player>>,
+    mut query: Query<
+        (
+            &mut Player,
+            &mut LinearVelocity,
+            Has<Grounded>,
+            &mut Action,
+            &HeldInputs,
+            &mut ActionBuffer,
+        ),
+        With<Player>,
+    >,
     time: Res<Time<Fixed>>,
-    held: Res<HeldInputs>,
-    mut buffer: ResMut<ActionBuffer>,
     gravity: Res<Gravity>,
 ) {
     let delta_time = time.delta_secs();
-    for (mut player, mut lin_vel, grounded, mut action) in &mut query {
+    for (mut player, mut lin_vel, grounded, mut action, held, mut buffer) in &mut query {
         let mut movement_velocity = Vec2::ZERO;
         let mut damping = 10.0;
         let mut gravity_damping = 0.5;
@@ -373,13 +379,12 @@ fn player_movement(
         player.coyote_frames = player.coyote_frames.saturating_sub(1);
         if grounded {
             player.coyote_frames = 0;
-            player.jumps_left = 2;
+            player.jumps_left = 1;
         }
         match &mut *action {
             Action::Idle => {
                 if !grounded {
                     *action = Action::Airborne { fast_fall: false };
-                    player.jumps_left = 1;
                     player.coyote_frames = 4;
                 }
                 movement_velocity.x = held.direction;

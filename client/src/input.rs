@@ -5,8 +5,8 @@ pub enum InputAction {
     Jump,
 }
 
-#[derive(Resource, Reflect, Debug, Default)]
-#[reflect(Resource)]
+#[derive(Component, Reflect, Debug, Default)]
+#[reflect(Component)]
 pub struct ActionBuffer {
     pub jump: ActionState,
 }
@@ -107,23 +107,26 @@ impl ActionTime {
 pub const JUST: ActionTime = ActionTime::JUST;
 pub const EVER: ActionTime = ActionTime::EVER;
 
-#[derive(Resource, Reflect, Clone, Copy, Debug, Default)]
-#[reflect(Resource)]
+#[derive(Component, Reflect, Clone, Copy, Debug, Default)]
+#[reflect(Component)]
 pub struct HeldInputs {
     pub direction: f32,
     pub jump: bool,
     pub fast_fall: bool,
 }
 
-pub fn plugin(app: &mut App) {
-    app.init_resource::<ActionBuffer>()
-        .init_resource::<HeldInputs>();
+#[derive(Component, Reflect, Clone, Debug, Default)]
+#[reflect(Component)]
+pub struct InputConfig {
+    // TODO: fields. Currently this structure is only a marker that a player can be controlled
+}
 
+pub fn plugin(app: &mut App) {
     app.add_systems(
         RunFixedMainLoop,
         poll_inputs.in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop),
     )
-    .add_systems(FixedPreUpdate, tick_buffer);
+    .add_systems(FixedPreUpdate, tick_buffers);
 }
 
 macro_rules! input_buffer {
@@ -139,25 +142,28 @@ macro_rules! input_buffer {
 
 pub fn poll_inputs(
     input: Res<ButtonInput<KeyCode>>,
-    mut held: ResMut<HeldInputs>,
-    mut action_buffer: ResMut<ActionBuffer>,
+    mut buffers: Query<(&mut HeldInputs, &mut ActionBuffer, &InputConfig)>,
 ) {
     use KeyCode::*;
 
-    held.direction = if input.pressed(KeyA) && !input.pressed(KeyD) {
-        -1.0
-    } else if input.pressed(KeyD) && !input.pressed(KeyA) {
-        1.0
-    } else {
-        0.0
-    };
+    for (mut held, mut action_buffer, _config) in &mut buffers {
+        held.direction = if input.pressed(KeyA) && !input.pressed(KeyD) {
+            -1.0
+        } else if input.pressed(KeyD) && !input.pressed(KeyA) {
+            1.0
+        } else {
+            0.0
+        };
 
-    held.jump = input.pressed(KeyW);
-    held.fast_fall = input.pressed(KeyS);
+        held.jump = input.pressed(KeyW);
+        held.fast_fall = input.pressed(KeyS);
 
-    input_buffer!(input, action_buffer, KeyW, jump);
+        input_buffer!(input, action_buffer, KeyW, jump);
+}
 }
 
-pub fn tick_buffer(mut action_buffer: ResMut<ActionBuffer>) {
-    action_buffer.tick();
+pub fn tick_buffers(mut action_buffers: Query<&mut ActionBuffer>) {
+    for mut buffer in &mut action_buffers {
+        buffer.tick();
+    }
 }
