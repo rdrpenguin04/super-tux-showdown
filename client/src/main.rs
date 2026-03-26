@@ -45,6 +45,15 @@ enum MainState {
 const MAIN_RENDER_LAYER: Layer = 0;
 const UI_RENDER_LAYER: Layer = 1;
 
+#[derive(PhysicsLayer, Default)]
+pub enum GameLayer {
+    #[default]
+    Default,
+    Ecb,
+    TerrainDetector,
+    Terrain,
+}
+
 #[derive(Resource, Reflect, Debug, Clone, Deref, DerefMut)]
 #[reflect(Resource)]
 struct Players(Vec<Entity>);
@@ -297,6 +306,10 @@ fn setup_game(
         ])
         .unwrap(),
         RigidBody::Static,
+        CollisionLayers::new(
+            GameLayer::Terrain,
+            [GameLayer::Ecb, GameLayer::TerrainDetector],
+        ),
     ));
     let idle = &character.anims[IDLE].frames[0];
     let p1 = commands
@@ -312,6 +325,7 @@ fn setup_game(
             CustomPositionIntegration,
             Transform::from_xyz(0.0, 0.2, 0.0),
             Visibility::Visible,
+            CollisionLayers::new(GameLayer::Ecb, GameLayer::Terrain),
         ))
         .with_children(|parent| {
             parent.spawn((
@@ -321,6 +335,7 @@ fn setup_game(
             parent.spawn((
                 Transform::from_translation(idle.bounding_box.bottom.extend(0.0)),
                 GroundDetector,
+                CollisionLayers::new(GameLayer::TerrainDetector, GameLayer::Terrain),
             ));
         })
         .id();
@@ -336,6 +351,7 @@ fn setup_game(
             CustomPositionIntegration,
             Transform::from_xyz(0.0, 0.2, 0.0),
             Visibility::Visible,
+            CollisionLayers::new(GameLayer::Ecb, GameLayer::Terrain),
         ))
         .with_children(|parent| {
             parent.spawn((
@@ -345,6 +361,7 @@ fn setup_game(
             parent.spawn((
                 Transform::from_translation(idle.bounding_box.bottom.extend(0.0)),
                 GroundDetector,
+                CollisionLayers::new(GameLayer::TerrainDetector, GameLayer::Terrain),
             ));
         })
         .id();
@@ -567,11 +584,12 @@ fn player_movement(
 }
 
 fn run_move_and_slide(
-    mut query: Query<(Entity, &mut Transform, &mut LinearVelocity, &Collider), With<Player>>,
+    mut query: Query<(&mut Transform, &mut LinearVelocity, &Collider), With<Player>>,
+    other_players_query: Query<Entity, With<Player>>,
     move_and_slide: MoveAndSlide,
     time: Res<Time<Fixed>>,
 ) {
-    for (entity, mut transform, mut lin_vel, collider) in &mut query {
+    for (mut transform, mut lin_vel, collider) in &mut query {
         let MoveAndSlideOutput {
             position,
             projected_velocity,
@@ -582,7 +600,7 @@ fn run_move_and_slide(
             lin_vel.0,
             time.delta(),
             &MoveAndSlideConfig::default(),
-            &SpatialQueryFilter::from_excluded_entities([entity]),
+            &SpatialQueryFilter::from_excluded_entities(other_players_query),
             |_| MoveAndSlideHitResponse::Accept,
         );
 
