@@ -42,6 +42,10 @@ enum MainState {
 const MAIN_RENDER_LAYER: Layer = 0;
 const UI_RENDER_LAYER: Layer = 1;
 
+#[derive(Resource, Reflect, Debug, Clone, Deref, DerefMut)]
+#[reflect(Resource)]
+struct Players(Vec<Entity>);
+
 fn main() -> AppExit {
     App::new()
         .add_plugins((
@@ -85,6 +89,7 @@ fn main() -> AppExit {
             },
         )
         .insert_resource(Gravity::default())
+        .insert_resource(Players(vec![]))
         .add_message::<Launch>()
         .add_systems(Startup, load_temp_assets)
         .add_systems(OnEnter(MainState::Game), setup_game)
@@ -170,12 +175,18 @@ pub enum Action {
 }
 
 impl Action {
-    pub fn allowed(&self, player: &Player) -> &'static [InputAction] {
+    pub fn allowed(&self, player: &Player, lin_vel: &LinearVelocity) -> &'static [InputAction] {
         match self {
             Self::Idle => &[InputAction::Jump],
             Self::Airborne { .. } => {
-                if player.jumps_left > 0 || player.coyote_frames > 0 {
+                let jump = player.jumps_left > 0 || player.coyote_frames > 0;
+                let fast_fall = lin_vel.y <= 0.1;
+                if jump && fast_fall {
+                    &[InputAction::Jump, InputAction::FastFall]
+                } else if jump {
                     &[InputAction::Jump]
+                } else if fast_fall {
+                    &[InputAction::FastFall]
                 } else {
                     &[]
                 }
@@ -246,13 +257,25 @@ fn setup_game(
 
     commands
         .spawn((
-            Transform::from_scale(Vec3::splat(1.0 / 256.0)).with_translation(vec3(0.0, -0.8, 0.0)),
+            Transform::from_scale(Vec3::splat(1.0 / 256.0)).with_translation(vec3(-0.25, -0.8, 0.0)),
             TextLayout::new_with_justify(Justify::Center),
             RenderLayers::layer(UI_RENDER_LAYER),
-            Text2d::new("Tux:\n"),
+            Text2d::new("Tux\n"),
         ))
         .with_children(|parent| {
             parent.spawn((TextSpan::new("0.0"), PlayerDamageLabel { player: 0 }));
+            parent.spawn(TextSpan::new("%"));
+        });
+
+    commands
+        .spawn((
+            Transform::from_scale(Vec3::splat(1.0 / 256.0)).with_translation(vec3(0.25, -0.8, 0.0)),
+            TextLayout::new_with_justify(Justify::Center),
+            RenderLayers::layer(UI_RENDER_LAYER),
+            Text2d::new("Tux\n"),
+        ))
+        .with_children(|parent| {
+            parent.spawn((TextSpan::new("0.0"), PlayerDamageLabel { player: 1 }));
             parent.spawn(TextSpan::new("%"));
         });
 
@@ -267,7 +290,7 @@ fn setup_game(
         RigidBody::Static,
     ));
     let idle = &character.anims[IDLE].frames[0];
-    commands
+    let p1 = commands
         .spawn((
             Player::default(),
             InputConfig::default(),
@@ -286,7 +309,29 @@ fn setup_game(
                 Transform::from_translation(idle.bounding_box.bottom.extend(0.0)),
                 GroundDetector,
             ));
-        });
+        })
+        .id();
+    let p2 = commands
+        .spawn((
+            Player::default(),
+            to_collider(idle.bounding_box),
+            RigidBody::Kinematic,
+            CustomPositionIntegration,
+            Transform::from_xyz(0.0, 0.2, 0.0),
+            Visibility::Visible,
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                SceneRoot(character.model.clone()),
+                Transform::from_rotation(character.right_rot),
+            ));
+            parent.spawn((
+                Transform::from_translation(idle.bounding_box.bottom.extend(0.0)),
+                GroundDetector,
+            ));
+        })
+        .id();
+    commands.insert_resource(Players(vec![p1, p2]));
 }
 
 #[derive(Message)]
@@ -300,10 +345,17 @@ pub struct Launch {
 }
 
 fn update_game_ui(
-    mut damage_label: Single<&mut TextSpan, With<PlayerDamageLabel>>,
-    player: Single<&Player>,
+    mut damage_labels: Query<(&mut TextSpan, &PlayerDamageLabel)>,
+    player_query: Query<&Player>,
+    players_by_number: Res<Players>,
 ) {
-    damage_label.0 = format!("{:.1}", player.damage);
+    for (mut label, info) in &mut damage_labels {
+        if let Some(player_id) = players_by_number.get(info.player as usize) {
+            if let Ok(player) = player_query.get(*player_id) {
+                label.0 = format!("{:.1}", player.damage);
+            }
+        }
+    }
 }
 
 fn check_ground(
@@ -356,17 +408,14 @@ fn apply_launches(
 }
 
 fn player_movement(
-    mut query: Query<
-        (
-            &mut Player,
-            &mut LinearVelocity,
-            Has<Grounded>,
-            &mut Action,
-            &HeldInputs,
-            &mut ActionBuffer,
-        ),
-        With<Player>,
-    >,
+    mut query: Query<(
+        &mut Player,
+        &mut LinearVelocity,
+        Has<Grounded>,
+        &mut Action,
+        &HeldInputs,
+        &mut ActionBuffer,
+    )>,
     time: Res<Time<Fixed>>,
     gravity: Res<Gravity>,
 ) {
@@ -390,11 +439,8 @@ fn player_movement(
                 movement_velocity.x = held.direction;
             }
             Action::Airborne { fast_fall, .. } => {
-                if held.fast_fall && lin_vel.y <= 0.05 {
-                    *fast_fall = true;
-                    lin_vel.y -= 1.0;
-                }
                 if *fast_fall {
+                    lin_vel.y = -16.0;
                     gravity_damping = 1.0;
                 }
                 if grounded {
@@ -442,7 +488,7 @@ fn player_movement(
             }
         }
 
-        if let Some(next_action) = buffer.try_consume(action.allowed(&player)) {
+        if let Some(next_action) = buffer.try_consume(action.allowed(&player, &lin_vel)) {
             match (&mut *action, next_action) {
                 (Action::Idle, InputAction::Jump) => {
                     *action = Action::Jumpsquat {
@@ -463,6 +509,9 @@ fn player_movement(
                     }
                     lin_vel.y = 13.0;
                     *fast_fall = false;
+                }
+                (Action::Airborne { fast_fall }, InputAction::FastFall) => {
+                    *fast_fall = true;
                 }
                 _ => unreachable!(),
             }
@@ -510,13 +559,14 @@ fn run_move_and_slide(
     }
 }
 
-fn hacky_respawn(mut players: Query<(&mut Transform, &mut LinearVelocity), With<Player>>) {
-    for (mut transform, mut velocity) in &mut players {
+fn hacky_respawn(mut players: Query<(&mut Transform, &mut LinearVelocity, &mut Player)>) {
+    for (mut transform, mut velocity, mut player) in &mut players {
         if transform.translation.y < -20.0 {
             transform.translation.x = 0.0;
             transform.translation.y = 5.0;
             velocity.x = 0.0;
             velocity.y = -5.0;
+            player.damage = 0.0;
         }
     }
 }

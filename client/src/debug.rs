@@ -5,7 +5,7 @@ use bevy::{
 };
 use bevy_egui::{EguiContext, EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 
-use crate::{Action, Launch, Player, angle_to_vector};
+use crate::{Action, Launch, Player, angle_to_vector, input::ActionBuffer};
 
 #[derive(Resource, Reflect, Debug)]
 #[reflect(Resource)]
@@ -98,7 +98,7 @@ fn debug_ui_system(
     mut contexts: EguiContexts,
     mut launch_params: ResMut<LaunchParams>,
     mut launch_writer: MessageWriter<Launch>,
-    players: Query<(&Player, &Action)>,
+    players: Query<(&Player, &ActionBuffer, &Action)>,
     obj: Option<Res<SelectedObject>>,
 ) -> Result {
     egui::Window::new("Debug").show(contexts.ctx_mut()?, |ui| {
@@ -107,10 +107,11 @@ fn debug_ui_system(
                 ui.label("Selected object: none");
             }
             Some(SelectedObject::Player(e)) => {
-                let (player, action) = players.get(*e).unwrap();
+                let (player, action_buffer, action) = players.get(*e).unwrap();
                 ui.label(format!("Selected object: Player ({e})"));
                 ui.label(format!("Data: {player:?}"));
                 ui.label(format!("State: {action:?}"));
+                ui.label(format!("Buffer: {action_buffer:?}"));
                 ui.add(
                     egui::Slider::new(&mut launch_params.angle, 0..=355)
                         .text("Launch angle")

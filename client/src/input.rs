@@ -3,22 +3,26 @@ use bevy::prelude::*;
 #[derive(Reflect, Clone, Copy, Debug)]
 pub enum InputAction {
     Jump,
+    FastFall,
 }
 
 #[derive(Component, Reflect, Debug, Default)]
 #[reflect(Component)]
 pub struct ActionBuffer {
-    pub jump: ActionState,
+    pub jump: ActionState<true>,
+    pub fast_fall: ActionState<false>,
 }
 
 impl ActionBuffer {
     pub fn tick(&mut self) {
         self.jump.tick();
+        self.fast_fall.tick();
     }
 
-    pub fn state_of(&self, action: InputAction) -> ActionState {
+    pub fn state_of(&self, action: InputAction) -> ActionStateInner {
         match action {
-            InputAction::Jump => self.jump,
+            InputAction::Jump => *self.jump,
+            InputAction::FastFall => *self.fast_fall,
         }
     }
 
@@ -33,17 +37,34 @@ impl ActionBuffer {
     }
 
     pub fn clear(&mut self) {
-        self.jump = ActionState::ReleasedFor(EVER);
+        *self.jump = ActionStateInner::ReleasedFor(EVER);
+        *self.fast_fall = ActionStateInner::ReleasedFor(EVER);
+    }
+}
+
+#[derive(Clone, Copy, Reflect, Debug, Default, Deref, DerefMut)]
+pub struct ActionState<const HELD: bool>(pub ActionStateInner);
+
+impl<const HELD: bool> ActionState<HELD> {
+    pub const JUST_PRESSED: Self = Self(ActionStateInner::PressedFor(JUST));
+    pub const JUST_RELEASED: Self = Self(ActionStateInner::ReleasedFor(JUST));
+
+    pub fn tick(&mut self) {
+        if HELD {
+            self.tick_held();
+        } else {
+            self.tick_tap();
+        }
     }
 }
 
 #[derive(Clone, Copy, Reflect, Debug)]
-pub enum ActionState {
+pub enum ActionStateInner {
     PressedFor(ActionTime),
     ReleasedFor(ActionTime),
 }
 
-impl Default for ActionState {
+impl Default for ActionStateInner {
     fn default() -> Self {
         Self::ReleasedFor(EVER)
     }
@@ -51,11 +72,18 @@ impl Default for ActionState {
 
 pub const BUFFER_TIME: u8 = 10;
 
-impl ActionState {
+impl ActionStateInner {
     pub const JUST_PRESSED: Self = Self::PressedFor(JUST);
     pub const JUST_RELEASED: Self = Self::ReleasedFor(JUST);
 
-    pub fn tick(&mut self) {
+    pub fn tick_tap(&mut self) {
+        match self {
+            Self::PressedFor(_) => *self = Self::JUST_RELEASED,
+            Self::ReleasedFor(x) => x.tick(),
+        }
+    }
+
+    pub fn tick_held(&mut self) {
         match self {
             Self::PressedFor(x) => x.tick(),
             Self::ReleasedFor(x) => x.tick(),
@@ -112,7 +140,6 @@ pub const EVER: ActionTime = ActionTime::EVER;
 pub struct HeldInputs {
     pub direction: f32,
     pub jump: bool,
-    pub fast_fall: bool,
 }
 
 #[derive(Component, Reflect, Clone, Debug, Default)]
@@ -156,9 +183,9 @@ pub fn poll_inputs(
         };
 
         held.jump = input.pressed(KeyW);
-        held.fast_fall = input.pressed(KeyS);
 
         input_buffer!(input, action_buffer, KeyW, jump);
+        input_buffer!(input, action_buffer, KeyS, fast_fall);
 }
 }
 
