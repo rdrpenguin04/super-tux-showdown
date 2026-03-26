@@ -1,3 +1,4 @@
+use bevy_reflect::Reflect;
 use serde::{Deserialize, Serialize};
 
 use crate::TerrainBox;
@@ -42,7 +43,7 @@ pub enum AnimEnd {
     End,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Reflect, Default, Clone)]
 pub struct Frame {
     /// Flag to ensure this frame doesn't get its display skipped unless
     /// absolutely necessary.

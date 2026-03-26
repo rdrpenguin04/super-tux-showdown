@@ -20,7 +20,10 @@ use bevy::{
     remote::{RemotePlugin, http::RemoteHttpPlugin},
 };
 use bevy_hanabi::prelude::*;
-use super_tux_showdown_common::{TerrainBox, anim::names::IDLE};
+use super_tux_showdown_common::{
+    TerrainBox,
+    anim::{self, names::IDLE},
+};
 
 use crate::{
     data::CharacterDescription,
@@ -102,6 +105,7 @@ fn main() -> AppExit {
                 apply_launches,
                 player_movement,
                 run_move_and_slide,
+                hacky_update_animations,
                 hacky_respawn,
             )
                 .chain()
@@ -121,6 +125,8 @@ pub struct Player {
     coyote_frames: u8,
     // specifically midair jumps
     jumps_left: u8,
+    temp_data: anim::Frame,
+    temp_data_2: (Quat, Quat),
 }
 
 impl Default for Player {
@@ -131,6 +137,8 @@ impl Default for Player {
             facing: 1.0,
             coyote_frames: 0,
             jumps_left: 1,
+            temp_data: anim::Frame::default(),
+            temp_data_2: (Quat::IDENTITY, Quat::IDENTITY),
         }
     }
 }
@@ -257,7 +265,8 @@ fn setup_game(
 
     commands
         .spawn((
-            Transform::from_scale(Vec3::splat(1.0 / 256.0)).with_translation(vec3(-0.25, -0.8, 0.0)),
+            Transform::from_scale(Vec3::splat(1.0 / 256.0))
+                .with_translation(vec3(-0.25, -0.8, 0.0)),
             TextLayout::new_with_justify(Justify::Center),
             RenderLayers::layer(UI_RENDER_LAYER),
             Text2d::new("Tux\n"),
@@ -292,7 +301,11 @@ fn setup_game(
     let idle = &character.anims[IDLE].frames[0];
     let p1 = commands
         .spawn((
-            Player::default(),
+            Player {
+                temp_data: idle.clone(),
+                temp_data_2: (character.left_rot, character.right_rot),
+                ..default()
+            },
             InputConfig::default(),
             to_collider(idle.bounding_box),
             RigidBody::Kinematic,
@@ -313,7 +326,11 @@ fn setup_game(
         .id();
     let p2 = commands
         .spawn((
-            Player::default(),
+            Player {
+                temp_data: idle.clone(),
+                temp_data_2: (character.left_rot, character.right_rot),
+                ..default()
+            },
             to_collider(idle.bounding_box),
             RigidBody::Kinematic,
             CustomPositionIntegration,
@@ -425,18 +442,27 @@ fn player_movement(
         let mut damping = 10.0;
         let mut gravity_damping = 0.5;
 
+        // Jump handling
         player.coyote_frames = player.coyote_frames.saturating_sub(1);
         if grounded {
             player.coyote_frames = 0;
             player.jumps_left = 1;
         }
+
+        // Tick active action
         match &mut *action {
             Action::Idle => {
                 if !grounded {
                     *action = Action::Airborne { fast_fall: false };
                     player.coyote_frames = 4;
                 }
-                movement_velocity.x = held.direction;
+                if held.direction != 0.0 {
+                    if held.direction.signum() != player.facing {
+                        *action = Action::Turnaround { frames_left: 11 };
+                    } else {
+                        movement_velocity.x = held.direction;
+                    }
+                }
             }
             Action::Airborne { fast_fall, .. } => {
                 if *fast_fall {
@@ -484,13 +510,18 @@ fn player_movement(
                 *frames_left -= 1;
                 if !grounded {
                     *action = Action::Airborne { fast_fall: false };
+                } else if *frames_left == 5 {
+                    player.facing = -player.facing;
+                } else if *frames_left == 0 {
+                    *action = Action::Idle;
                 }
             }
         }
 
+        // Handle input
         if let Some(next_action) = buffer.try_consume(action.allowed(&player, &lin_vel)) {
             match (&mut *action, next_action) {
-                (Action::Idle, InputAction::Jump) => {
+                (Action::Idle | Action::Turnaround { .. }, InputAction::Jump) => {
                     *action = Action::Jumpsquat {
                         frames_left: 5,
                         short: false,
@@ -517,6 +548,7 @@ fn player_movement(
             }
         }
 
+        // Movement
         lin_vel.0 += movement_velocity;
 
         lin_vel.0 += gravity.0 * delta_time * gravity_damping * 4.0;
@@ -556,6 +588,29 @@ fn run_move_and_slide(
 
         transform.translation = position.extend(0.0);
         lin_vel.0 = projected_velocity;
+    }
+}
+
+fn hacky_update_animations(
+    mut players: Query<(&Player, &mut Collider, &Children)>,
+    mut scene_roots: Query<&mut Transform, With<SceneRoot>>,
+) {
+    for (player, mut collider, children) in &mut players {
+        // TODO: anything but this bodge
+        let mut bounding_box = player.temp_data.bounding_box;
+        if player.facing == -1.0 {
+            bounding_box = bounding_box.flip();
+        }
+        *collider = to_collider(bounding_box);
+        for child in children {
+            if let Ok(mut transform) = scene_roots.get_mut(*child) {
+                transform.rotation = if player.facing == -1.0 {
+                    player.temp_data_2.0
+                } else {
+                    player.temp_data_2.1
+                };
+            }
+        }
     }
 }
 
